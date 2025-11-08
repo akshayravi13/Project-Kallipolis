@@ -1,0 +1,15 @@
+[project]
+name = "project-kallipolis"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "autogen-agentchat>=0.7.5",
+    "autogen-core>=0.7.5",
+    "autogen-ext[gemini]>=0.7.5",
+    "ollama>=0.6.0",
+    "openai>=2.6.1",
+    "python-dotenv>=1.1.1",
+    "tiktoken>=0.12.0",
+]
