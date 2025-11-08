@@ -1,4 +1,4 @@
-# 🏛️ Kallipolis Simulator: Investigating Classism in Plato’s Ideal City Using LLM Agents
+# 🏛️ Project Kallipolis: Investigating Classism in Plato’s Ideal City Using LLM Agents
 
 **Author:** Akshay Ravi  
 **Date:** November 2025  
