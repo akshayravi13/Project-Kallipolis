@@ -1,16 +1,7 @@
-# main.py
-# Kallipolis SelectorGroupChat implementation (AutoGen 0.7.5) with file logging and full transcript printing.
-# Requirements:
-#   pip install "autogen-agentchat>=0.7.5" "autogen-ext[ollama]>=0.7.5"
-#   ollama run llama3.1:8b-instruct-q8_0
-#
-# Notes:
-# - Writes a JSONL transcript to kallipolis_logs.jsonl.
-# - Prints every turn (God, Ruler, and any specialist replies) so you can see all AgentTool dialogues.
-# - Ruler prompt enforces exactly one tool call per turn with a single-argument schema: {"task": "..."}.
-
 import asyncio
 import json
+import re
+import os
 from datetime import datetime
 from typing import Any, Dict, List, Sequence
 
@@ -18,232 +9,190 @@ from autogen_agentchat.agents import AssistantAgent
 from autogen_agentchat.conditions import TextMentionTermination, MaxMessageTermination
 from autogen_agentchat.messages import BaseAgentEvent, BaseChatMessage
 from autogen_agentchat.teams import SelectorGroupChat
-from autogen_agentchat.tools import AgentTool
 from autogen_ext.models.ollama import OllamaChatCompletionClient
 
 # --------------------------
 # Config
 # --------------------------
 MODEL_NAME = "llama3.1:8b-instruct-q8_0"
-TEMPERATURE = 0.6
-MAX_TOOL_CALLS = 12
-LOG_FILE = "kallipolis_logs.jsonl"  # persistent JSONL transcript
+TEMPERATURE = 0.7
+LOG_DIR = "logs"
 
+# --------------------------
+# Logging & Utilities
+# --------------------------
 def now_iso() -> str:
     return datetime.now().isoformat(timespec="seconds")
 
-def log_console(prefix: str, payload: Any) -> None:
-    print(f"[{now_iso()}] {prefix}: {payload}")
+def get_log_filename() -> str:
+    # Create the directory if it doesn't exist
+    os.makedirs(LOG_DIR, exist_ok=True)
+    
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    # Join path components safely: logs/kallipolis_logs_...
+    return os.path.join(LOG_DIR, f"kallipolis_logs_{timestamp}.jsonl")
 
-def log_jsonl(speaker: str, phase: str, message: Any) -> None:
+CURRENT_LOG_FILE = get_log_filename()
+
+def log_event(speaker: str, message: str) -> None:
+    # Color coding for terminal readability
+    color = "\033[94m" if speaker == "Philosopher_Ruler" else "\033[92m"
+    if speaker == "God": color = "\033[93m" # Yellow for God
+    reset = "\033[0m"
+    
+    print(f"\n{color}[{now_iso()}] {speaker}:{reset}") 
+    print(f"{message}")
+    
     rec = {
         "timestamp": now_iso(),
         "speaker": speaker,
-        "phase": phase,
-        "message": message if isinstance(message, (str, int, float, bool)) else json.dumps(message, ensure_ascii=False),
+        "message": message,
     }
-    with open(LOG_FILE, "a", encoding="utf-8") as f:
+    with open(CURRENT_LOG_FILE, "a", encoding="utf-8") as f:
         f.write(json.dumps(rec, ensure_ascii=False) + "\n")
-
-# --------------------------
-# Model client
-# --------------------------
-def make_ollama_client() -> OllamaChatCompletionClient:
-    # Keep tool schema simple for Ollama; provide model_info to ensure function_calling is enabled. [web:39]
-    return OllamaChatCompletionClient(
-        model=MODEL_NAME,
-        temperature=TEMPERATURE,
-        model_info={
-            "vision": False,
-            "function_calling": True,
-            "json_output": False,
-            "structured_output": False,
-        },
-    )
 
 # --------------------------
 # Agents
 # --------------------------
+def make_ollama_client() -> OllamaChatCompletionClient:
+    return OllamaChatCompletionClient(
+        model=MODEL_NAME,
+        temperature=TEMPERATURE,
+    )
+
 def build_specialist(name: str, domain: str, client: OllamaChatCompletionClient) -> AssistantAgent:
     sys_msg = (
-        f"You are {name}. Expertise: {domain}. You will receive a single TASK from the RULER. "
-        "Respond in under 100 words, concise, factual, and actionable. "
-        "Begin with one-line summary, followed by 1-2 short bullets. "
-        "Plain text only; no JSON unless asked. "
-        "All tasks are prefixed with 'FROM RULER:'."
+        f"You are {name}, responsible for {domain} in the city of Kallipolis.\n"
+        "You uphold your craft with excellence and self-discipline, contributing to the harmony of the whole city. "
+        "Your focus is on your work. Write as a capable and civic-minded citizen who takes pride in their duty.\n\n"
+        "**CONSTRAINTS:**\n"
+        "1. Speak ONLY when spoken to by the Ruler.\n"
+        "2. Keep your counsel concise (max 50 words).\n"
+        "3. Do NOT act as a narrator."
     )
     return AssistantAgent(
         name=name,
         model_client=client,
         system_message=sys_msg,
-        max_tool_iterations=1,  # specialists do not call tools
     )
 
-def build_ruler(client: OllamaChatCompletionClient, specialist_tools: List[AgentTool]) -> AssistantAgent:
-    # Enforce: exactly one tool call per turn using single-arg schema to avoid validation issues. [web:24][web:39]
+def build_ruler(client: OllamaChatCompletionClient, worker_names: List[str]) -> AssistantAgent:
+    worker_list_str = ", ".join([f"@{w}" for w in worker_names])
+    
     sys_msg = (
-        "You are the Philosopher-Ruler: wise, rational, inquisitive, perfectionist, critical, benevolent.\n"
-        "Protocol (strict):\n"
-        "1) After God publishes a crisis JSON, OUTPUT a plan-of-attack with EXACT specialist NAMES (in order) and 1-2 sentence reasons each, "
-        "then print single-line JSON {\"to_call\": [\"Farmer\", \"Builder\", ...]}.\n"
-        "2) Then consult each listed specialist exactly once (first round) using tools with precisely one argument: "
-        "{\"task\": \"FROM RULER: <task>\"}.\n"
-        "   IMPORTANT: Call exactly ONE tool per turn; do NOT batch or parallelize tool calls.\n"
-        "3) After all first-round replies are received, summarize and critique; if you need details, issue follow-ups using the SAME tool call format, "
-        "still ONE tool call per turn; keep TOTAL tool calls ≤ 12.\n"
-        "4) When satisfied, OUTPUT ONLY the final JSON (no extra text): "
-        "{\"directive\": \"<single-sentence plan>\", \"called_tools\": [names], \"satisfied\": true}.\n"
-        "Never send the final JSON as a tool call; use short, clear language."
+        "You are the Philosopher-Ruler of Kallipolis. "
+        "Your task is to deliberate on each crisis that threatens the city and guide its citizens toward harmony and justice. "
+        "You govern through reason and understanding; every decision must serve the common good.\n\n"
+        "**YOUR CITIZENS:** " + worker_list_str + ".\n\n"
+        "**PROTOCOL (STRICT):**\n"
+        "1. **ONE AT A TIME:** Consult only ONE citizen per turn to ensure their voice is heard clearly.\n"
+        "2. **NO VENTRILOQUISM:** Do NOT write the citizen's response yourself. Ask, tag, and STOP.\n"
+        "3. **ROUTING:** To invite a citizen to speak, end your turn with: 'speak @CitizenName'.\n"
+        "4. **GOAL:** After gathering wisdom, issue a final decree in JSON: {\"directive\": \"FINAL DECISION\", \"satisfied\": true}."
     )
     return AssistantAgent(
         name="Philosopher_Ruler",
         model_client=client,
-        tools=specialist_tools,
-        max_tool_iterations=MAX_TOOL_CALLS,  # budget guard at the Ruler level
         system_message=sys_msg,
-        description="Ruler who orchestrates consultations and outputs final directive as JSON.",
     )
 
 def build_god(client: OllamaChatCompletionClient) -> AssistantAgent:
     sys_msg = (
-        "You are God: impartial, concise, omniscient for this simulation.\n"
-        "When asked to produce a crisis, reply STRICT JSON: {\"crisis\": \"...\", \"time_limit_years\": <int>}.\n"
-        "When given a final directive JSON, reply STRICT JSON: {\"solved\": true/false, \"reason\": \"short\"}."
+        "You are God: impartial, concise, and omniscient.\n"
+        "1. Start by presenting a crisis: {\"crisis\": \"...\"}.\n"
+        "2. Remain silent while the city deliberates.\n"
+        "3. When the Ruler issues a 'directive', analyze it.\n"
+        "4. **TERMINATION:** You MUST end your judgment with this exact JSON to end the simulation:\n"
+        "   {\"judgement\": \"...\", \"solved\": true}"
     )
     return AssistantAgent(
         name="God",
         model_client=client,
         system_message=sys_msg,
-        max_tool_iterations=1,
     )
 
-def build_agents_and_tools(client: OllamaChatCompletionClient):
-    specs_meta = [
-        ("Farmer", "agriculture, crops, soil and irrigation"),
-        ("Builder", "infrastructure, water systems, storage, roads"),
-        ("Warrior", "defense, law & order, thieves and security"),
-        ("Merchant", "supply chains, storage logistics, trade"),
-        ("Artist", "social morale, festivals, community cohesion"),
-        ("Healer", "public health and immediate medical response"),
-        ("Teacher", "education, training, public outreach"),
-    ]
-    specialists = {n: build_specialist(n, d, client) for (n, d) in specs_meta}
-
-    # Wrap each specialist as an AgentTool with a single 'task': str argument for robust schema. [web:24][web:39]
-    specialist_tools: List[AgentTool] = []
-    for name in specialists:
-        specialist_tools.append(AgentTool(specialists[name], return_value_as_last_message=True))
-
-    ruler = build_ruler(client, specialist_tools)
-    god = build_god(client)
-    return god, ruler, specialists
-
 # --------------------------
-# Selector logic
+# Selector Logic
 # --------------------------
-def _contains(text: str | None, token: str) -> bool:
-    return bool(text and token in text)
+def get_next_speaker(messages: Sequence[BaseAgentEvent | BaseChatMessage]) -> str | None:
+    if not messages: return "God"
+    
+    last_msg = messages[-1]
+    last_speaker = last_msg.source
+    last_text = last_msg.to_text()
 
-def _history_flags(messages: Sequence[BaseAgentEvent | BaseChatMessage]) -> Dict[str, bool]:
-    crisis_seen = any((m.source == "God") and _contains(m.to_text(), "\"crisis\"") for m in messages)
-    directive_seen = any((m.source == "Philosopher_Ruler") and _contains(m.to_text(), "\"directive\"") for m in messages)
-    judgement_seen = any((m.source == "God") and _contains(m.to_text(), "\"solved\"") for m in messages)
-    return {"crisis": crisis_seen, "directive": directive_seen, "judgement": judgement_seen}
+    # God -> Ruler (God presents crisis, Ruler steps up)
+    if last_speaker == "God":
+        return "Philosopher_Ruler"
 
-def selector_func(messages: Sequence[BaseAgentEvent | BaseChatMessage]) -> str | None:
-    # God -> Ruler (consult/tools/synthesize) -> God (final) deterministic handoff. [web:3]
-    flags = _history_flags(messages)
-    if not flags["crisis"]:
-        return "God"
-    if flags["directive"] and not flags["judgement"]:
-        return "God"
+    # Worker -> Ruler (Citizens always report back to the Ruler)
+    specialists = ["Farmer", "Builder", "Warrior", "Merchant", "Artist", "Healer", "Teacher"]
+    if last_speaker in specialists:
+        return "Philosopher_Ruler"
+
+    # Ruler -> Worker (Parse the 'speak @Name' command)
+    if last_speaker == "Philosopher_Ruler":
+        if '"directive"' in last_text:
+            return "God"
+        
+        # Regex to find 'speak @Name'
+        match = re.search(r"speak @(Farmer|Builder|Warrior|Merchant|Artist|Healer|Teacher)", last_text, re.IGNORECASE)
+        if match:
+            target = match.group(1)
+            return next((s for s in specialists if s.lower() == target.lower()), "Philosopher_Ruler")
+        
+        return "Philosopher_Ruler"
+
     return "Philosopher_Ruler"
 
 # --------------------------
-# Transcript helpers
-# --------------------------
-def write_message_jsonl(msg: BaseChatMessage | BaseAgentEvent) -> None:
-    # Persist raw text plus minimal meta for later inspection. [web:3]
-    payload = {
-        "source": getattr(msg, "source", None),
-        "type": getattr(msg, "type", None),
-        "text": msg.to_text() if hasattr(msg, "to_text") else None,
-    }
-    log_jsonl(payload.get("source") or "UNKNOWN", payload.get("type") or "message", payload)
-
-def print_transcript(messages: List[BaseChatMessage | BaseAgentEvent], specialists: Dict[str, AssistantAgent]) -> List[str]:
-    # Print all messages in order and return the list of consulted specialists. [web:3]
-    consulted = []
-    spec_names = set(specialists.keys())
-    print("\n--- FULL TRANSCRIPT ---")
-    for m in messages:
-        src = getattr(m, "source", "UNKNOWN")
-        txt = m.to_text() or ""
-        # Write JSONL record for every message
-        write_message_jsonl(m)
-        # Console pretty-print
-        print(f"\n[{src}]")
-        print(txt.strip() or "<no text>")
-        # Track consulted specialists by appearance
-        if src in spec_names and src not in consulted:
-            consulted.append(src)
-    print("\n--- END TRANSCRIPT ---\n")
-    return consulted
-
-# --------------------------
-# Entrypoint
+# Main Execution
 # --------------------------
 async def main() -> None:
-    # Reset log file each run
-    with open(LOG_FILE, "w", encoding="utf-8") as f:
-        f.write("")
+    print(f"Logging to: {CURRENT_LOG_FILE}")
+    with open(CURRENT_LOG_FILE, "w", encoding="utf-8") as f: f.write("")
 
     client = make_ollama_client()
-    god, ruler, specialists = build_agents_and_tools(client)
+    
+    # Define Workers
+    specs_meta = [
+        ("Farmer", "agriculture and sustinence"),
+        ("Builder", "structures and infrastructure"),
+        ("Warrior", "protection and order"),
+        ("Merchant", "trade and distribution"),
+        ("Artist", "culture and spirit"),
+        ("Healer", "health and vitality"),
+        ("Teacher", "education and knowledge"),
+    ]
+    
+    specialists = [build_specialist(n, d, client) for (n, d) in specs_meta]
+    worker_names = [n for n, d in specs_meta]
+    
+    ruler = build_ruler(client, worker_names)
+    god = build_god(client)
 
-    termination = TextMentionTermination("solved", sources=["God"]) | MaxMessageTermination(80)  # safety cap [web:3]
+    participants = [god, ruler] + specialists
+
+    termination = TextMentionTermination("solved", sources=["God"]) | MaxMessageTermination(20)
+
     team = SelectorGroupChat(
-        [god, ruler],
+        participants,
         model_client=client,
-        selector_func=selector_func,     # deterministic next-speaker choice [web:3]
-        allow_repeated_speaker=True,     # Ruler will speak repeatedly [web:3]
+        selector_func=get_next_speaker,
+        allow_repeated_speaker=True,
         termination_condition=termination,
-        model_client_streaming=False,
     )
 
-    task = (
-        "Simulation start.\n"
-        "God: Produce a STRICT crisis JSON now.\n"
-        "Ruler: After God posts the crisis JSON, follow your protocol (plan, consult each tool exactly once in round 1, synthesize, finalize).\n"
-        "God: After the Ruler emits final directive JSON, judge with STRICT {\"solved\":..., \"reason\":...}."
-    )
+    task = "Simulation Start. God, create a crisis regarding a plague."
 
-    log_console("RUN", "Starting team...")
-    run_result = await team.run(task=task)
-    log_console("RUN", f"Stop reason: {run_result.stop_reason}")
+    print("--- STARTING KALLIPOLIS SIMULATION ---")
+    
+    async for message in team.run_stream(task=task):
+        if hasattr(message, "source") and hasattr(message, "content"):
+            content_str = str(message.content) 
+            log_event(message.source, content_str)
 
-    # Print and persist full transcript (includes specialist dialogues if any)
-    consulted = print_transcript(run_result.messages, specialists)
-
-    # Extract crisis, directive, and judgement best-effort for a compact summary
-    crisis = None
-    directive = None
-    judgement = None
-    for m in run_result.messages:
-        src = getattr(m, "source", None)
-        txt = m.to_text() or ""
-        if src == "God" and '"crisis"' in txt:
-            crisis = txt
-        if src == "Philosopher_Ruler" and '"directive"' in txt:
-            directive = txt
-        if src == "God" and '"solved"' in txt:
-            judgement = txt
-
-    print("\n--- SUMMARY ---")
-    print("CRISIS:", crisis or "N/A")
-    print("DIRECTIVE:", directive or "N/A")
-    print("CALLED_TOOLS:", consulted or [])
-    print("GOD_JUDGEMENT:", judgement or "N/A")
+    print(f"--- END OF SIMULATION. Log saved to {CURRENT_LOG_FILE} ---")
 
 if __name__ == "__main__":
     asyncio.run(main())
