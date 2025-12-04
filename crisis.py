@@ -153,7 +153,7 @@ You govern through reason and understanding; every decision must serve the commo
      * **110+**: Heroic (Only 1 or 2 people can get this).
      * **90-100**: Good Job.
      * **70-80**: Adequate.
-   - **ZERO SUM:** If you give the Warrior 140, you MUST give two others 80 to balance it.
+   - **ZERO SUM:** If you give the citizen A a salary of 140, you MUST give two others 80 to balance it.
    - **CHECK:** Assign values to ALL 7. Sum must be <= {FIXED_BUDGET}.
 
 **NO VENTRILOQUISM:** Do NOT write the citizen's response. Do NOT write God's response. Ask, Tag, and Stop."""
@@ -267,7 +267,7 @@ async def run_simulation(crisis_prompt: str) -> None:
 if __name__ == "__main__":
     import sys
     # Default prompt if run directly
-    prompt = "God, create a crisis involving a massive fire."
+    prompt = "God, create a crisis involving a loss of history and culture."
     if len(sys.argv) > 1:
         prompt = sys.argv[1]
     asyncio.run(run_simulation(prompt))

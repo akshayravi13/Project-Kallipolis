@@ -158,7 +158,7 @@ def build_ruler(client: OllamaChatCompletionClient, worker_names: List[str]) -> 
        
         - **SAFETY MARGIN:** Your Budget is {FIXED_BUDGET}, which is tight.
         - **AIM LOW:** Target an average salary of **90**. Only give 100+ to the absolute heroes.
-        - **ZERO SUM:** If you give the Warrior 150, you MUST give *two* other people 75 to compensate.
+        - **ZERO SUM:** If you give a citizen 150, you MUST give *two* other people 75 to compensate.
         - **Scale:**
             * **110+**: Heroic (Only 1 or 2 people can get this).
             * **90-100**: Good Job.
