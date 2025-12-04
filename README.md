@@ -3,7 +3,7 @@
 
 
 <p align="center">
-  <img src="assets/Project Kallipolis Logo.png" alt="Project Kallipolis Logo" width="400">
+  <img src="assets/Project Kallipolis Logo.png" alt="Project Kallipolis Logo" width="800">
 </p>
 
 <!-- Badges -->
