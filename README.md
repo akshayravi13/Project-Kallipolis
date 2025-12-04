@@ -249,6 +249,8 @@ project-kallipolis/
 
 ### Tools & Frameworks
 - [AutoGen](https://microsoft.github.io/autogen/) — Multi-agent LLM framework
+
+Super helpful guide on AutoGen by Krish Naik and Mayank Aggarwal on [Youtube](https://youtu.be/yDpV_jgO93c?si=34avnftBkQb1y6iQ)
 - [Ollama](https://ollama.ai/) — Local LLM inference
 - [BERT-Score](https://github.com/Tiiiger/bert_score) — Text similarity metric
 - [Sentence-Transformers](https://www.sbert.net/) — Semantic embeddings
