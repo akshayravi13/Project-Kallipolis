@@ -1,15 +1,25 @@
 [project]
 name = "project-kallipolis"
 version = "0.1.0"
-description = "Add your description here"
+description = "Simulating Plato's ideal city Kallipolis with virtuous LLM Agents"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
     "autogen-agentchat>=0.7.5",
     "autogen-core>=0.7.5",
     "autogen-ext[gemini]>=0.7.5",
+    "bert-score>=0.3.13",
+    "ipykernel>=7.1.0",
+    "matplotlib>=3.10.7",
+    "nltk>=3.9.2",
+    "numpy>=2.3.5",
     "ollama>=0.6.0",
     "openai>=2.6.1",
+    "pandas>=2.3.3",
     "python-dotenv>=1.1.1",
+    "rouge-score>=0.1.2",
+    "scikit-learn>=1.7.2",
+    "seaborn>=0.13.2",
+    "sentence-transformers>=5.1.2",
     "tiktoken>=0.12.0",
 ]
